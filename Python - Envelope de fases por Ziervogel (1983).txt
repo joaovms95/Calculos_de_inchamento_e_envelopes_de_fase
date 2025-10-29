@@ -1,0 +1,435 @@
+import numpy as np
+from scipy.misc import derivative
+import PFT as pf
+from scipy import optimize
+#Função Bolha P (BOL P)
+def BOLP_PCSAFT(m,sigma,epsilon_K,k,comp,Ti,Pchute_i,etal_chute,etav_chute,y_chute,passo_T,erro_max,ITmax_def,lnKmax):
+    Kb = 1.380649e-23  #J/K constante de Boltzmann
+    Tref = np.array([Ti]) #Vetor com as temperaturas especificadas
+    x = comp #comp é a composição. Como é um cálculo de bolha, a composição da fase líquida é igual à composição.
+    Pchute = np.array([Pchute_i]) #Pa
+    etalchute = np.array([etal_chute]) #Primeiro chute de etal
+    etavchute = np.array([etav_chute]) #Primeiro chute de etav
+    ychute = [y_chute] #primeiro chute de y. ychute será uma lista de arrays (vetores).
+    Pf = np.array([])#Pa. Vetor que recebe as pressões finais calculadas.
+    etalf = np.array([]) #Vetor que recebe as etal finais calculadas.
+    etavf = np.array([]) #Vetor que recebe as etav finais calculadas.
+    yf = [] #Lista que recebe os y finais calculados.
+    ITmax = ITmax_def #número máximo de iterações
+    i = 0 #contador
+    lnK = np.array([100,100,100]) #valores genéricos apenas para iniciar o laço.
+
+    while max(abs(lnK))>lnKmax:
+        T = Tref[i] #T será igual ao valor na posição i do vetor Tref.
+        etal = etalchute[i] #etal será igual ao valor na posição i do vetor etalchute.
+        etav = etavchute[i]
+        y = ychute[i]
+        P = Pchute[i]
+        #Fl e Fv calculam a diferença entre a pressão informada e a pressão calculada correspondente ao eta. As funções são usadas posteriormente para a convergência do eta aos valores de pressão calculados.
+        def Fl(etal):
+            Zl = pf.PFTZ(m,sigma,epsilon_K,k,T,etal,x) #Função que calcula Z do líquido pela PC-SAFT
+            rol = pf.PFTRO(m,sigma,epsilon_K,T,etal,x) #Função que calcula ro do líquido pela PC-SAFT
+            Pcalcl = Zl*Kb*T*rol*1e10**3 #Pressão calculada
+            Fl = abs(P-Pcalcl)
+            return Fl
+        def Fv(etav):
+            Zv = pf.PFTZ(m,sigma,epsilon_K,k,T,etav,y) #Função que calcula Z do vapor pela PC-SAFT
+            rov = pf.PFTRO(m,sigma,epsilon_K,T,etav,y) #Função que calcula ro do vapor pela PC-SAFT
+            Pcalcv = Zv*Kb*T*rov*1e10**3
+            Fv = abs(P-Pcalcv)
+            return Fv
+        #O laço while abaixo atualiza as pressões, os optimizes convergem novos etas a cada novo valor de pressão
+        erro = 1e6 #Valor inicial do erro para iniciar o laço.
+        ITe = 0 #Contador de iterações
+        while erro>erro_max and ITe<ITmax:
+            sol_etal = optimize.root(Fl, etal) #A função optimize.root retorna a raiz de uma função para um dado chute inicial
+            etal = sol_etal.x
+            if sol_etal.message != 'The solution converged.':  # Se o método default do optimize (hybr) não gerar solução convergida, é utilizada a solução do método krylov.
+                sol_etal = optimize.root(Fl, etalchute[i], method='krylov')
+                etal = sol_etal.x
+            sol_etav = optimize.root(Fv, etav)
+            etav = sol_etav.x
+            if sol_etav.message != 'The solution converged.':  # Se o método default do optimize (hybr) não gerar solução convergida, é utilizada a solução do método krylov.
+                sol_etav = optimize.root(Fv, etavchute[i], method='krylov')
+                etav = sol_etav.x
+            phil = np.exp(pf.PFTPHI(m,sigma,epsilon_K,k,T,etal,x)) #phi do líquido. A função PFTPHI calcula lnphi pela PC-SAFT
+            phiv = np.exp(pf.PFTPHI(m,sigma,epsilon_K,k,T,etav,y)) #phi do vapor
+            K = phil/phiv
+            y = K*x
+            Pnovo = P*sum(y)
+            ynovo = y/sum(y)
+            erro = abs(Pnovo-P)
+            P = Pnovo
+            y = ynovo
+            ITe += 1
+        #Funções auxiliares para cálculo de Hl e Hv (Hl e Hv são funções que devem ser maiores que zero. Caso contrário, há problemas na raiz encontrada.):
+        def funcaol(etal):
+            Zliq = pf.PFTZ(m,sigma,epsilon_K,k,T,etal,x)
+            return Zliq
+        dZliq_detal = derivative(funcaol,etal,1e-6)
+        def funcaov(etav):
+            Zvap = pf.PFTZ(m,sigma,epsilon_K,k,T,etav,y)
+            return Zvap
+        dZvap_detav = derivative(funcaov,etav,1e-6)
+        #As funções abaixo devem ser sempre maiores que zero para os pontos calculados.
+        Hl = funcaol(etal)+etal*dZliq_detal
+        Hv = funcaov(etav)+etav*dZvap_detav
+        # As linhas abaixo servem para atualizar os vetores de chutes com os últimos valores calculados.
+        Pchute = np.append(Pchute,P)
+        etalchute = np.append(etalchute,etal)
+        etavchute = np.append(etavchute,etav)
+        ychute.append(y)
+        # As linhas abaixo armazenam os valores finais calculados em vetores de resultados.
+        Pf = np.append(Pf,P) #Vetor final de pressão
+        etalf = np.append(etalf, etal) #Vetor final de eta do líquido
+        etavf = np.append(etavf, etav) #Vetor final de eta do vapor
+        yf.append(y) #Lista final com composições do vapor
+        lnK = np.log(y/x)
+        # A linha abaixo é uma tentativa de parar os cálculos caso uma solução trivial seja encontrada na primeira iteração (chutes iniciais)
+        if i == 0 and max(abs(lnK))<1e-2:
+            print('Solução trivial obtida na primeira iteração. Ajustar chutes iniciais.')
+            break
+        # As linhas abaixo determinam o passo em temperatura baseado no valor do ln(K), ou seja, baseado em quão próximo do ponto crítico o algoritmo se encontra.
+        if max(abs(lnK))>=1:
+            passo = passo_T[0] #passo igual ao valor na posição 0 do vetor passo_T (dado de entrada da função BOLP_PCSAFT).
+            Tref = np.append(Tref,Tref[-1]+passo) #Esta linha soma o passo ao último valor do vetor Tref. O resultado passa a ocupar a última posição do vetor Tref, sendo o valor de temperatura da próxima iteração.
+        elif max(abs(lnK))<1 and max(abs(lnK))>=0.5 :
+            passo = passo_T[1]
+            Tref = np.append(Tref,Tref[-1]+passo)
+        elif max(abs(lnK))<0.5:
+            passo = passo_T[2]
+            Tref = np.append(Tref,Tref[-1]+passo)
+        # As linhas abaixo atualizam o valor de beta de Ziervogel 1983 a partir da segunda iteração. Se beta for menor que 2, recomenda-se P como variável de iteração (T como independente). Se beta for maior que 20, recomenda-se T como variável de iteração (P como independente).
+        if i>0:
+            beta = abs((np.log(Pf[i])-np.log(Pf[i-1]))/(np.log(Tref[i])-np.log(Tref[i-1])))
+        else:
+            beta = 10 #Valor arbitrário entre 2 e 20.
+        print('T=',Tref[i],'P=',Pf[i],'etal=',etalf[i],'etav=',etavf[i],'lnKmax=',max(abs(lnK)),Hl,Hv,'the=',beta,'IT=',ITe,'passo=',passo,sol_etal.message,sol_etav.message)
+        print(y)
+        i += 1
+
+    Tref = Tref[0:-1] #excluindo o último ponto de Tref, pois nunca há cálculo de P neste ponto.
+    X = Tref #K. Armazenando temperaturas finais em X.
+    Y = Pf #Pa. Armazenando pressões calculadas em Y.
+    return[X,Y]
+
+
+#Função Bolha T (BOL T):
+def BOLT_PCSAFT(m,sigma,epsilon_K,k,comp,Pi,Tchute_i,etal_chute,etav_chute,y_chute,passo_P,erro_max,ITmax_def,lnKmax):
+    Kb = 1.380649e-23  # J/K constante de Boltzmann
+    Pref = np.array([Pi]) #Vetor com as pressões especificadas
+    x = comp #comp é a composição. Como é um cálculo de bolha, a composição da fase líquida é igual à composição.
+    Tchute = np.array([Tchute_i]) #K
+    etalchute = np.array([etav_chute]) #Primeiro chute de etal
+    etavchute = np.array([etal_chute]) #Primeiro chute de etav
+    ychute = [y_chute] #primeiro chute de y. ychute será uma lista de arrays.
+    Tf = np.array([])#K. Vetor que recebe as temperaturas finais calculadas.
+    etalf = np.array([]) #Vetor que recebe as etal finais calculadas.
+    etavf = np.array([]) #Vetor que recebe as etav finais calculadas.
+    yf = [] #Lista que recebe os y finais calculados.
+    ITmax = ITmax_def #número máximo de iterações
+    i = 0 #contador
+    lnK = np.array([100,100,100]) #valores genéricos apenas para iniciar o laço.
+
+    while max(abs(lnK))>lnKmax:
+        P = Pref[i]
+        etal = etalchute[i]
+        etav = etavchute[i]
+        y = ychute[i]
+        T = Tchute[i]
+        #Fl e Fv calculam a diferença entre a pressão informada e a pressão calculada correspondente ao eta. As funções são usadas posteriormente para a convergência do eta aos valores de pressão calculados.
+        def Fl(etal):
+            Zl = pf.PFTZ(m,sigma,epsilon_K,k,T,etal,x)
+            rol = pf.PFTRO(m,sigma,epsilon_K,T,etal,x)
+            Pcalcl = Zl*Kb*T*rol*1e10**3
+            Fl = abs(P-Pcalcl)
+            return Fl
+        def Fv(etav):
+            Zv = pf.PFTZ(m,sigma,epsilon_K,k,T,etav,y)
+            rov = pf.PFTRO(m,sigma,epsilon_K,T,etav,y)
+            Pcalcv = Zv*Kb*T*rov*1e10**3
+            Fv = abs(P-Pcalcv)
+            return Fv
+        #O laço while abaixo atualiza as pressões, os optimizes convergem novos etas a cada novo valor de pressão
+        erro = 1e6
+        ITe = 0
+        while erro>erro_max and ITe<ITmax: #Laço externo deve sempre estar com erro maior ou igual ao laço interno.
+            sol_etal = optimize.root(Fl, etal)
+            etal = sol_etal.x
+            if sol_etal.message != 'The solution converged.':  # Se o método default do optimize (hybr) não gerar solução convergida, é utilizada a solução do método krylov.
+                sol_etal = optimize.root(Fl, etalchute[i], method='krylov')
+                etal = sol_etal.x
+            sol_etav = optimize.root(Fv, etav)
+            etav = sol_etav.x
+            if sol_etav.message != 'The solution converged.':  # Se o método default do optimize (hybr) não gerar solução convergida, é utilizada a solução do método krylov.
+                sol_etav = optimize.root(Fv, etavchute[i], method='krylov')
+                etav = sol_etav.x
+            phil = np.exp(pf.PFTPHI(m,sigma,epsilon_K,k,T,etal,x))
+            phiv = np.exp(pf.PFTPHI(m,sigma,epsilon_K,k,T,etav,y))
+            K = phil/phiv
+            y = K*x
+            Tnovo = T/sum(y)**0.1
+            ynovo = y/sum(y)
+            erro = abs(Tnovo-T)
+            T = Tnovo
+            y = ynovo
+            ITe += 1
+        #Funções auxiliares para cálculo de Hl e Hv (funções que devem ser maiores que zero):
+        def funcao(etal):
+            Zliq = pf.PFTZ(m,sigma,epsilon_K,k,T,etal,x)
+            return Zliq
+        dZliq_detal = derivative(funcao,etal,1e-6)
+        def funcao(etav):
+            Zvap = pf.PFTZ(m,sigma,epsilon_K,k,T,etav,y)
+            return Zvap
+        dZvap_detav = derivative(funcao,etav,1e-6)
+        #As funções abaixo devem ser sempre maiores que zero para os pontos calculados.
+        Hl = funcao(etal)+etal*dZliq_detal
+        Hv = funcao(etav)+etav*dZvap_detav
+        Tchute = np.append(Tchute,T)
+        etalchute = np.append(etalchute,etal)
+        etavchute = np.append(etavchute,etav)
+        ychute.append(y)
+        Tf = np.append(Tf,T)
+        etalf = np.append(etalf, etal)
+        etavf = np.append(etavf, etav)
+        yf.append(y)
+        lnK = np.log(y/x)
+        if i == 0 and max(abs(lnK))<1e-2:
+            print('Solução trivial obtida na primeira iteração. Ajustar chutes iniciais.')
+            break
+        if max(abs(lnK))>=1:
+            passo = passo_P[0]
+            Pref = np.append(Pref,Pref[-1]+passo)
+        elif max(abs(lnK))<1 and max(abs(lnK))>=0.5 :
+            passo = passo_P[1]
+            Pref = np.append(Pref,Pref[-1]+passo)
+        elif max(abs(lnK))<0.5:
+            passo = passo_P[2]
+            Pref = np.append(Pref,Pref[-1]+passo)
+        # Estimativa de beta do artigo de Ziervogel 1983. Se beta for menor que 2, recomenda-se P como variável de iteração (T como independente). Se beta for maior que 20, recomenda-se T como variável de iteração (P como independente).
+        if i>0:
+            beta = abs((np.log(Pref[i])-np.log(Pref[i-1]))/(np.log(Tf[i])-np.log(Tf[i-1])))
+        else:
+            beta = 10 #Valor arbitrário entre 2 e 20.
+        print('P=',Pref[i],'T=',Tf[i],'etal=',etalf[i],'etav=',etavf[i],'lnKmax=',max(abs(lnK)),Hl,Hv,'the=',beta,'IT=',ITe,'passo=',passo,sol_etal.message,sol_etav.message)
+        print(y)
+        i += 1
+    Pref = Pref[0:-1] #excluindo o último ponto de Tref, pois nunca há cálculo de P neste ponto.
+    X = Tf #K
+    Y = Pref #Pa
+    return[X,Y]
+
+
+#Função Orvalho P (ORV P):
+def ORVP_PCSAFT(m,sigma,epsilon_K,k,comp,Ti,Pchute_i,etal_chute,etav_chute,x_chute,passo_T,erro_max,ITmax_def,lnKmax):
+    Kb = 1.380649e-23  #J/K constante de Boltzmann
+    Tref = np.array([Ti]) #Vetor com as temperaturas especificadas
+    y = comp #Como é um cálculo de orvalho, a composição da fase vapor é igual à composição.
+    Pchute = np.array([Pchute_i]) #Pa
+    etalchute = np.array([etal_chute]) #Primeiro chute de etal
+    etavchute = np.array([etav_chute]) #Primeiro chute de etav
+    xchute = [x_chute] #primeiro chute de x. xchute será uma lista de arrays.
+    Pf = np.array([])#Pa. Vetor que recebe as pressões finais calculadas.
+    etalf = np.array([]) #Vetor que recebe as etal finais calculadas.
+    etavf = np.array([]) #Vetor que recebe as etav finais calculadas.
+    xf = [] #Lista que recebe os x finais calculados.
+    ITmax = ITmax_def #número máximo de iterações
+    i = 0
+    lnK = np.array([100,100,100]) #valores genéricos apenas para iniciar o laço.
+
+    while max(abs(lnK))>lnKmax:
+        T = Tref[i]
+        etal = etalchute[i]
+        etav = etavchute[i]
+        x = xchute[i]
+        P = Pchute[i]
+        #Fl e Fv calculam a diferença entre a pressão informada e a pressão calculada correspondente ao eta. As funções são usadas posteriormente para a convergência do eta aos valores de pressão calculados.
+        def Fl(etal):
+            Zl = pf.PFTZ(m,sigma,epsilon_K,k,T,etal,x)
+            rol = pf.PFTRO(m,sigma,epsilon_K,T,etal,x)
+            Pcalcl = Zl*Kb*T*rol*1e10**3
+            Fl = abs(P-Pcalcl)
+            return Fl
+        def Fv(etav):
+            Zv = pf.PFTZ(m,sigma,epsilon_K,k,T,etav,y)
+            rov = pf.PFTRO(m,sigma,epsilon_K,T,etav,y)
+            Pcalcv = Zv*Kb*T*rov*1e10**3
+            Fv = abs(P-Pcalcv)
+            return Fv
+        #O laço while abaixo atualiza as pressões, os optimizes convergem novos etas a cada novo valor de pressão
+        erro = 1e6
+        ITe = 0
+        while erro>erro_max and ITe<ITmax:
+            sol_etal = optimize.root(Fl, etal)
+            etal = sol_etal.x
+            if sol_etal.message != 'The solution converged.':  # Se o método default do optimize (hybr) não gerar solução convergida, é utilizada a solução do método krylov.
+                sol_etal = optimize.root(Fl, etalchute[i], method='krylov')
+                etal = sol_etal.x
+            sol_etav = optimize.root(Fv, etav)
+            etav = sol_etav.x
+            if sol_etav.message != 'The solution converged.':  # Se o método default do optimize (hybr) não gerar solução convergida, é utilizada a solução do método krylov.
+                sol_etav = optimize.root(Fv, etavchute[i], method='krylov')
+                etav = sol_etav.x
+            phil = np.exp(pf.PFTPHI(m,sigma,epsilon_K,k,T,etal,x))
+            phiv = np.exp(pf.PFTPHI(m,sigma,epsilon_K,k,T,etav,y))
+            K = phil/phiv
+            x = y/K
+            Pnovo = P*sum(x)**-1
+            xnovo = x/sum(x)
+            erro = abs(Pnovo-P)
+            P = Pnovo
+            x = xnovo
+            ITe += 1
+        #Funções auxiliares para cálculo de Hl e Hv (funções que devem ser maiores que zero):
+        def funcaol(etal):
+            Zliq = pf.PFTZ(m,sigma,epsilon_K,k,T,etal,x)
+            return Zliq
+        dZliq_detal = derivative(funcaol,etal,1e-6)
+        def funcaov(etav):
+            Zvap = pf.PFTZ(m,sigma,epsilon_K,k,T,etav,y)
+            return Zvap
+        dZvap_detav = derivative(funcaov,etav,1e-6)
+        #As funções abaixo devem ser sempre maiores que zero para os pontos calculados.
+        Hl = funcaol(etal)+etal*dZliq_detal
+        Hv = funcaov(etav)+etav*dZvap_detav
+        Pchute = np.append(Pchute,P)
+        etalchute = np.append(etalchute,etal)
+        etavchute = np.append(etavchute,etav)
+        xchute.append(x)
+        Pf = np.append(Pf,P)
+        etalf = np.append(etalf, etal)
+        etavf = np.append(etavf, etav)
+        xf.append(x)
+        lnK = np.log(y/x)
+        if i == 0 and max(abs(lnK))<1e-4:
+            print('Solução trivial obtida na primeira iteração. Ajustar chutes iniciais.')
+            break
+        if max(abs(lnK))>=1:
+            passo = passo_T[0]
+            Tref = np.append(Tref,Tref[-1]+passo)
+        elif max(abs(lnK))<1 and max(abs(lnK))>=0.5 :
+            passo = passo_T[1]#/50#10
+            Tref = np.append(Tref,Tref[-1]+passo)
+        elif max(abs(lnK))<0.5:
+            passo = passo_T[2]
+            Tref = np.append(Tref,Tref[-1]+passo)
+        # Estimativa de beta do artigo de Ziervogel 1983. Se beta for menor que 2, recomenda-se P como variável de iteração (T como independente). Se beta for maior que 20, recomenda-se T como variável de iteração (P como independente).
+        if i>0:
+            beta = abs((np.log(Pf[i])-np.log(Pf[i-1]))/(np.log(Tref[i])-np.log(Tref[i-1])))
+        else:
+            beta = 10 #Valor arbitrário entre 2 e 20.
+        print('T=',Tref[i],'P=',Pf[i],'etal=',etalf[i],'etav=',etavf[i],'lnKmax=',max(abs(lnK)),Hl,Hv,'the=',beta,'IT=',ITe,'passo=',passo,sol_etal.message,sol_etav.message)
+        print(x)
+        i += 1
+
+    Tref = Tref[0:-1] #excluindo o último ponto de Tref, pois nunca há cálculo de P neste ponto.
+    X = Tref  # K
+    Y = Pf  # Pa
+    return [X,Y]
+
+#Função Orvalho T (ORV T):
+def ORVT_PCSAFT(m,sigma,epsilon_K,k,comp,Pi,Tchute_i,etal_chute,etav_chute,x_chute,passo_P,erro_max,ITmax_def,lnKmax):
+    Kb = 1.380649e-23  #J/K constante de Boltzmann
+    Pref = np.array([Pi]) #Vetor com as pressões especificadas
+    y = comp
+    Tchute = np.array([Tchute_i]) #K
+    etalchute = np.array([etal_chute]) #Primeiro chute de etal
+    etavchute = np.array([etav_chute]) #Primeiro chute de etav
+    xchute = [x_chute] #primeiro chute de x. xchute será uma lista de arrays.
+    Tf = np.array([])#K. Vetor que recebe as temperaturas finais calculadas.
+    etalf = np.array([]) #Vetor que recebe as etal finais calculadas.
+    etavf = np.array([]) #Vetor que recebe as etav finais calculadas.
+    xf = [] #Lista que recebe os x finais calculados.
+    ITmax = ITmax_def #número máximo de iterações
+    i = 0
+    lnK = np.array([3,3,3]) #valores genéricos apenas para iniciar o laço.
+
+    while max(abs(lnK))>lnKmax:
+        P = Pref[i]
+        etal = etalchute[i]
+        etav = etavchute[i]
+        x = xchute[i]
+        T = Tchute[i]
+        #Fl e Fv calculam a diferença entre a pressão informada e a pressão calculada correspondente ao eta. As funções são usadas posteriormente para a convergência do eta aos valores de pressão calculados.
+        def Fl(etal):
+            Zl = pf.PFTZ(m,sigma,epsilon_K,k,T,etal,x)
+            rol = pf.PFTRO(m,sigma,epsilon_K,T,etal,x)
+            Pcalcl = Zl*Kb*T*rol*1e10**3
+            Fl = abs(P-Pcalcl)
+            return Fl
+        def Fv(etav):
+            Zv = pf.PFTZ(m,sigma,epsilon_K,k,T,etav,y)
+            rov = pf.PFTRO(m,sigma,epsilon_K,T,etav,y)
+            Pcalcv = Zv*Kb*T*rov*1e10**3
+            Fv = abs(P-Pcalcv)
+            return Fv
+        #O laço while abaixo atualiza as pressões, os optimizes convergem novos etas a cada novo valor de pressão
+        erro = 1e6
+        ITe = 0
+        while erro>erro_max and ITe<ITmax: #Laço externo deve sempre estar com erro maior ou igual ao laço interno.
+            sol_etal = optimize.root(Fl, etal)
+            etal = sol_etal.x
+            if sol_etal.message != 'The solution converged.':  # Se o método default do optimize (hybr) não gerar solução convergida, é utilizada a solução do método krylov.
+                sol_etal = optimize.root(Fl, etalchute[i], method='krylov')
+                etal = sol_etal.x
+            sol_etav = optimize.root(Fv, etav)
+            etav = sol_etav.x
+            if sol_etav.message != 'The solution converged.':  # Se o método default do optimize (hybr) não gerar solução convergida, é utilizada a solução do método krylov.
+                sol_etav = optimize.root(Fv, etavchute[i], method='krylov')
+                etav = sol_etav.x
+            phil = np.exp(pf.PFTPHI(m,sigma,epsilon_K,k,T,etal,x))
+            phiv = np.exp(pf.PFTPHI(m,sigma,epsilon_K,k,T,etav,y))
+            K = phil/phiv
+            x = y/K
+            Tnovo = T*sum(x)**0.1
+            xnovo = x/sum(x)
+            erro = abs(Tnovo-T)
+            T = Tnovo
+            x = xnovo
+            ITe += 1
+        #Funções auxiliares para cálculo de Hl e Hv (funções que devem ser maiores que zero):
+        def funcao(etal):
+            Zliq = pf.PFTZ(m,sigma,epsilon_K,k,T,etal,x)
+            return Zliq
+        dZliq_detal = derivative(funcao,etal,1e-6)
+        def funcao(etav):
+            Zvap = pf.PFTZ(m,sigma,epsilon_K,k,T,etav,y)
+            return Zvap
+        dZvap_detav = derivative(funcao,etav,1e-6)
+        #As funções abaixo devem ser sempre maiores que zero para os pontos calculados.
+        Hl = funcao(etal)+etal*dZliq_detal
+        Hv = funcao(etav)+etav*dZvap_detav
+        Tchute = np.append(Tchute,T)
+        etalchute = np.append(etalchute,etal)
+        etavchute = np.append(etavchute,etav)
+        xchute.append(x)
+        Tf = np.append(Tf,T)
+        etalf = np.append(etalf, etal)
+        etavf = np.append(etavf, etav)
+        xf.append(x)
+        lnK = np.log(y/x)
+        if i == 0 and max(abs(lnK))<1e-2:
+            print('Solução trivial obtida na primeira iteração. Ajustar chutes iniciais.')
+            break
+        if max(abs(lnK))>=1:
+            passo = passo_P[0]
+            Pref = np.append(Pref,Pref[-1]+passo)
+        elif max(abs(lnK))<1 and max(abs(lnK))>=0.5 :
+            passo = passo_P[1]
+            Pref = np.append(Pref,Pref[-1]+passo)
+        elif max(abs(lnK))<0.5:
+            passo = passo_P[2]
+            Pref = np.append(Pref,Pref[-1]+passo)
+        #Estimativa de beta do artigo de Ziervogel 1983. Se beta for menor que 2, recomenda-se P como variável de iteração (T como independente). Se beta for maior que 20, recomenda-se T como variável de iteração (P como independente).
+        if i>0:
+            beta = abs((np.log(Pref[i])-np.log(Pref[i-1]))/(np.log(Tf[i])-np.log(Tf[i-1])))
+        else:
+            beta = 10 #Valor arbitrário entre 2 e 20.
+        print('P=',Pref[i],'T=',Tf[i],'etal=',etalf[i],'etav=',etavf[i],'lnKmax=',max(abs(lnK)),Hl,Hv,'the=',beta,'IT=',ITe,'passo=',passo,sol_etal.message,sol_etav.message)
+        print(x)
+        i += 1
+    Pref = Pref[0:-1] #excluindo o último ponto de Tref, pois nunca há cálculo de P neste ponto.
+    X = Tf  # K
+    Y = Pref  # Pa
+    return[X,Y]
