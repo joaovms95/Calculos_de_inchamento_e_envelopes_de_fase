@@ -1,5 +1,5 @@
-#Os códigos foram implementados como parte da dissertação de mestrado de Silva (2025) e devem ser usados no software Scilab, com exceção do arquivo "Python-Envelope de fases por Ziervogel (1983)",
-#que deve ser executado em compilador de Python.
+#Os códigos foram implementados como parte da dissertação de mestrado de Silva (2025) e devem ser usados no software Scilab, com exceção dos arquivos iniciados em "Python",
+#que devem ser executados em compilador de Python.
 
 #Os arquivos utilizam a equação de estado PC-SAFT para realizar cálculos termodinâmicos de testes de inchamento da literatura.
 
